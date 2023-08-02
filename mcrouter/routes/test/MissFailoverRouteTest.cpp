@@ -126,6 +126,38 @@ TEST(missMissFailoverRouteTest, bestOnError3) {
   EXPECT_EQ(carbon::Result::NOTFOUND, *reply.result_ref());
 }
 
+TEST(missMissFailoverRouteTest, failoverCount) {
+  vector<std::shared_ptr<TestHandle>> test_handles{
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::NOTFOUND, "a")),
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::TIMEOUT, "b")),
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::FOUND, "c"))};
+
+  TestRouteHandle<MissFailoverRoute<TestRouterInfo>> rh(
+      get_route_handles(test_handles), false, 2);
+
+  // Limit number of failovers to 2. Should get whatever the failoverCount
+  // reply was, in this case the 2nd.
+  auto reply = rh.route(McGetRequest("0"));
+  EXPECT_EQ("b", carbon::valueRangeSlow(reply).str());
+  EXPECT_EQ(carbon::Result::TIMEOUT, *reply.result_ref());
+}
+
+TEST(missMissFailoverRouteTest, failoverCountAndBestOnError) {
+  vector<std::shared_ptr<TestHandle>> test_handles{
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::NOTFOUND, "a")),
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::TIMEOUT, "b")),
+      make_shared<TestHandle>(GetRouteTestData(carbon::Result::FOUND, "c"))};
+
+  TestRouteHandle<MissFailoverRoute<TestRouterInfo>> rh(
+      get_route_handles(test_handles), true, 2);
+
+  // Limit number of failovers to 2. But bestOnError will still give us the
+  // best response.
+  auto reply = rh.route(McGetRequest("0"));
+  EXPECT_EQ("a", carbon::valueRangeSlow(reply).str());
+  EXPECT_EQ(carbon::Result::NOTFOUND, *reply.result_ref());
+}
+
 TEST(missMissFailoverRouteTest, nonGetLike) {
   vector<std::shared_ptr<TestHandle>> test_handles{
       make_shared<TestHandle>(UpdateRouteTestData(carbon::Result::NOTSTORED)),

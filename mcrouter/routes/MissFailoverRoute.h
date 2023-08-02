@@ -40,8 +40,10 @@ class MissFailoverRoute {
  public:
   explicit MissFailoverRoute(
       std::vector<std::shared_ptr<RouteHandleIf>> targets,
-      bool returnBestOnError = false)
-      : targets_(std::move(targets)), returnBestOnError_(returnBestOnError) {
+      bool returnBestOnError = false,
+      int failoverCount = 0)
+      : targets_(std::move(targets)), returnBestOnError_(returnBestOnError),
+        failoverCount_(failoverCount) {
     assert(targets_.size() > 1);
   }
 
@@ -79,15 +81,19 @@ class MissFailoverRoute {
  private:
   const std::vector<std::shared_ptr<RouteHandleIf>> targets_;
   const bool returnBestOnError_;
+  const int failoverCount_;
 
-  bool shouldFailover(const carbon::Result replyResult) const {
-    return !isHitResult(replyResult) && (replyResult != carbon::Result::OK);
+  bool shouldFailover(const carbon::Result replyResult, const int count) const {
+    if (failoverCount_ <= 0 || count < failoverCount_)
+      return !isHitResult(replyResult) && (replyResult != carbon::Result::OK);
+    else
+      return false;
   }
 
   template <class Request>
   ReplyT<Request> routeImpl(const Request& req) const {
     auto reply = targets_[0]->route(req);
-    if (!shouldFailover(*reply.result_ref())) {
+    if (!shouldFailover(*reply.result_ref(), 0)) {
       return reply;
     }
 
@@ -97,7 +103,7 @@ class MissFailoverRoute {
           fiber_local<RouterInfo>::addRequestClass(RequestClass::kFailover);
           for (size_t i = 1, s = targets_.size(); i < s; ++i) {
             auto failoverReply = targets_[i]->route(req);
-            if (!shouldFailover(*failoverReply.result_ref())) {
+            if (!shouldFailover(*failoverReply.result_ref(), i)) {
               return failoverReply;
             }
             if (returnBestOnError_) {
@@ -124,6 +130,7 @@ template <class RouterInfo>
 typename RouterInfo::RouteHandlePtr makeMissFailoverRoute(
     std::vector<typename RouterInfo::RouteHandlePtr> targets,
     bool returnBestOnError) {
+  int failoverCount = 0;
   if (targets.empty()) {
     return createNullRoute<typename RouterInfo::RouteHandleIf>();
   }
@@ -133,7 +140,23 @@ typename RouterInfo::RouteHandlePtr makeMissFailoverRoute(
   }
 
   return makeRouteHandleWithInfo<RouterInfo, MissFailoverRoute>(
-      std::move(targets), returnBestOnError);
+      std::move(targets), returnBestOnError, failoverCount);
+}
+
+template <class RouterInfo>
+typename RouterInfo::RouteHandlePtr makeMissFailoverRoute(
+    std::vector<typename RouterInfo::RouteHandlePtr> targets,
+    bool returnBestOnError, int failoverCount) {
+  if (targets.empty()) {
+    return createNullRoute<typename RouterInfo::RouteHandleIf>();
+  }
+
+  if (targets.size() == 1) {
+    return std::move(targets[0]);
+  }
+
+  return makeRouteHandleWithInfo<RouterInfo, MissFailoverRoute>(
+      std::move(targets), returnBestOnError, failoverCount);
 }
 
 } // namespace detail
@@ -144,6 +167,7 @@ typename RouterInfo::RouteHandlePtr makeMissFailoverRoute(
     const folly::dynamic& json) {
   std::vector<typename RouterInfo::RouteHandlePtr> children;
   bool returnBestOnError = false;
+  int failoverCount = 0;
   if (json.isObject()) {
     if (auto jChildren = json.get_ptr("children")) {
       children = factory.createList(*jChildren);
@@ -154,12 +178,18 @@ typename RouterInfo::RouteHandlePtr makeMissFailoverRoute(
           "ModifyKeyRoute: return_best_on_error is not a bool");
       returnBestOnError = jReturnBest->asBool();
     }
+    if (auto jfailoverCount = json.get_ptr("failover_count")) {
+      checkLogic(
+          jfailoverCount->isInt(),
+          "MissFailoverRoute: failover_count is not an integer");
+      failoverCount = jfailoverCount->getInt();
+    }
 
   } else {
     children = factory.createList(json);
   }
   return detail::makeMissFailoverRoute<RouterInfo>(
-      std::move(children), returnBestOnError);
+      std::move(children), returnBestOnError, failoverCount);
 }
 } // namespace mcrouter
 } // namespace memcache
